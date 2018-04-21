@@ -1,0 +1,141 @@
+\documentclass{article}
+
+\usepackage{microtype}
+
+\usepackage{amsmath}
+\usepackage{mathtools}
+\usepackage{hyperref}
+
+\title{CS225 Spring 2018---Final Project Proposal}
+\author{
+  Lindsey Stuntz \\ \small{\texttt{git:@lstuntz}}
+}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Project: Exceptions}
+
+I propose to implement a mechanism to support functions that throw exceptions 
+and those that catch/handle exceptions in OCamL.  A semantics and type 
+checker for this extended language will also be implemented.
+
+\paragraph{Base Language}
+
+I will work with simply typed lambda calculus with booleans, natural numbers,
+let-binding, and products as the base language.
+
+\paragraph{Extended Language}
+
+I will extend this language with the features to catch, raise and handle exceptions.
+This consists of three new terms:
+\begin{enumerate}
+\item A runtime-error, written \texttt{error}
+\item An error handler, written \texttt{try}  $t$ \texttt{with} $t$
+\item An error raiser, written \texttt{raise}  $t$
+\end{enumerate}
+and the implementation of small-step and typing rules to correspond with all of the 
+above terms. Specific rules that will be modeled can be found in Pierce's 
+\emph{Types and Programming Languages} Chapter 14.
+
+\paragraph{Applications}
+
+Exceptions have applications in real-world programming whenever a function needs to 
+signal to its caller that it is unable to perform the requested task. This can be the 
+result of any number of issues such as a calculation involving division by zero or
+an arithmetic overflow, an out of bounds array index, a lookup key missing from a
+dictionary, a file that cannot be found or opened, some event such as the system
+running out of memory or the user killing the process, etc.
+
+OCamL does handle errors through exceptions in the standard library. Exceptions
+belong to an extensible sum type, \texttt{exn}, and are handled with the constuct
+\begin{verbatim}
+try . . .  with . . .
+\end{verbatim}
+The biggest issue with exceptions as OCamL handles them is that they do not appear 
+in types. An example of where this becomes problematic comes when using functions 
+like \texttt{Map.S.find} or \texttt{List.hd} are not total functions and may fail, but this can
+only be found by reading the documentation.
+
+\paragraph{Project Goals}
+
+For this project, I plan to complete:
+\begin{enumerate}
+\item The following three mechanisms
+	\begin{enumerate}
+	\item A mechanism that causes the program to abort when it encounters an exception, 
+	\item one for trapping and recovering from exceptions, 
+	\item and finally one to refine the previous two mechanisms and allow for extra 
+	programmer-specified data to be passed between exception sites and handlers.
+	\end{enumerate}
+\item A small-step semantics for exception handling
+\item A type checker for exception handling
+\item A formalized comparison of the exception handling that OCamL 
+  already supports in the standard library against my extended computational
+  model
+\end{enumerate}
+
+\paragraph{Expected Challenges}
+
+The ambiguity, or flexibility, involved in the typing of the term \texttt{error} breaks the property 
+that every typable term has a unique type. This can be dealt with in various ways and I expect 
+some challenges to arise in considering the different possible implementations to deal with the
+typechecking of \texttt{error} and determining the best choice for the given project.
+
+A possible extension of this project that I would like to include provided that I implement 
+all other aspects of exception handling outlined in a timely manner would be to encode 
+exceptions using monads. I expect this to be a slight challenge as I have never learned 
+about or worked with monads before and so would need to do outside research in order 
+to add this implementation.
+
+\paragraph{Timeline and Milestones}
+
+By the checkpoint I hope to have completed:
+\begin{enumerate}
+\item A prototype implementation of the first two mechanism regarding exception
+handling (program abortion and trapping and recovering)
+\item An implementation for the small-step semantics and type-checker for the
+two aforementioned exception mechanisms
+\item A suite of test-cases for the two implemented exception mechanisms
+\item One medium-sized program encoded in the language which demonstrates a
+  real-world application of the language and how different types of exceptions could 
+  come up and are handled
+\end{enumerate}
+
+\noindent
+By the final project draft I hope to have completed:
+\begin{enumerate}
+\item The full implementation of exception handling, refining the two mechanisms 
+previously implemented and adding in support to allow programmer-specific data passing
+\item The full implementation of small-step semantics and type checking
+\item A fully comprehensive test suite, with all tests passing
+\item The medium-sized program running through all implementations of exception 
+handling that have been implemented
+\item A draft writeup that explains the on-paper formalism of our
+  implementation as well a comparison of the exception handling that OCamL 
+  already supports in the standard library against my extended computational
+  model
+\item A draft of a presentation with 5 slides as the starting point for our
+  in-class presentation
+\end{enumerate}
+
+\noindent
+By the final project submission I hope to have completed:
+\begin{enumerate}
+\item The final writeup and presentation
+\item Any remaining implementation work that was missing in the final project
+  draft
+\end{enumerate}
+
+\paragraph{Github Repository}
+
+\href{https://github.com/lstuntz/ocaml-exceptions}{ocaml-extensions}
+
+\paragraph{Resources Used for this Proposal}
+\paragraph{}
+Pierce, Benjamin C. \emph{Types and Programming Languages}. MIT Press, 2002.
+\paragraph{}
+``Error Handling." \emph{OCaml}, \href{https://ocaml.org/learn/tutorials/error_handling.html}{ocaml.org/learn/tutorials/error\_handling.html}.
+
+\end{document}
