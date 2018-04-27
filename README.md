@@ -1,6 +1,6 @@
 # ocaml-exceptions
-#### An extension of the untyped lambda calculus to catch and handle exceptions in OCamL. 
-### UVM CS 225 Final Project. Apr. 2018.
+### An extension of the untyped lambda calculus to catch and handle exceptions in OCamL. 
+#### UVM CS 225 Final Project. Apr. 2018.
 
 
 Make sure you have ocaml 4.06.0, and ppx_deriving installed.
