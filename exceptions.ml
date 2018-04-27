@@ -406,6 +406,8 @@ let rec step (e0 : exp) : result = match e0 with
            * v(e) ∉ val
            * v(e) —↛ *)
           | Stuck -> Stuck
+          (* [E-AppErr2]
+           * v₁(error) —→ error *)
           | Err -> Err
           end
       (* [Apply-Cong-1]
@@ -419,6 +421,8 @@ let rec step (e0 : exp) : result = match e0 with
        * e₁(e₂) ∉ val
        * e₁(e₂) –↛ *)
       | Stuck -> Stuck
+      (* [E-AppErr1]
+       * error(t₂) —→ error *)
       | Err -> Err
     end
   | Error -> Stuck
