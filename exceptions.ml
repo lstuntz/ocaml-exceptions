@@ -39,7 +39,7 @@ type var = string
 (* e ∈ exp ⩴ true | false | if(e){e}{e}
  *         | zero | succ(e) | pred(e) | iszero(e)
  *         | x | λx:τ.e | e e | ⟨e,e⟩
- *         | projl(e) | projr(e)
+ *         | projl(e) | projr(e) | error
  *)
 type exp =
   | True
@@ -55,6 +55,7 @@ type exp =
   | Pair of exp * exp
   | Projl of exp
   | Projr of exp
+  | Error
 [@@deriving show {with_path = false}]
 
 (*********************
@@ -104,6 +105,7 @@ let rec free_vars (e0 : exp) : string_set = match e0 with
   | Pair(e1,e2) -> StringSet.union (free_vars e1) (free_vars e2)
   | Projl(e) -> free_vars e
   | Projr(e) -> free_vars e
+  | Error -> StringSet.empty
 
 exception SCOPE_ERROR
 exception TYPE_ERROR
@@ -140,6 +142,7 @@ let rec esubst_e_i (x : var) (e' : exp) (e0 : exp) : exp = match e0 with
       then Lambda(x,t,e)
       else Lambda(y,t,esubst_e_i x e' e)
   | Apply(e1,e2) -> Apply(esubst_e_i x e' e1,esubst_e_i x e' e2)
+  | Error -> Error
 
 exception NOT_CLOSED_ERROR
 
@@ -181,6 +184,7 @@ type result =
   | Val of value
   | Step of exp
   | Stuck
+  | Err
 [@@deriving show {with_path = false}]
 
 (* The small-step relation e —→ e
@@ -225,6 +229,7 @@ let rec step (e0 : exp) : result = match e0 with
        * if(e₁){e₂}{e₃} ∉ val
        * if(e₁){e₂}{e₃} —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
     end
   (* zero ∈ val *)
   | Zero -> Val(VNat(VZero))
@@ -248,6 +253,7 @@ let rec step (e0 : exp) : result = match e0 with
        * succ(e) ∉ val
        * succ(e) —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
     end
   | Pred(e) -> begin match step e with
       (* [Pred-Zero]
@@ -272,6 +278,7 @@ let rec step (e0 : exp) : result = match e0 with
        * pred(e) ∉ val
        * pred(e) —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
     end
   | IsZero(e) -> begin match step e with
       (* [IsZero-Zero]
@@ -296,6 +303,7 @@ let rec step (e0 : exp) : result = match e0 with
        * iszero(e) ∉ val
        * iszero(e) —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
     end
   | Pair(e1,e2) -> begin match step e1 with
       | Val(v1) -> begin match step e2 with
@@ -312,6 +320,7 @@ let rec step (e0 : exp) : result = match e0 with
            * ⟨v,e⟩ ∉ val
            * ⟨v,e⟩ —↛ *)
           | Stuck -> Stuck
+          | Err -> Err
           end
       (* [Pair-Cong-1]
        * e₁ —→ e₁′
@@ -324,6 +333,7 @@ let rec step (e0 : exp) : result = match e0 with
        * ⟨e₁,e₂⟩ ∉ val
        * ⟨e₁,e₂⟩ —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
       end
   | Projl(e1) -> begin match step e1 with
       (* [Projl-Pair]
@@ -345,6 +355,7 @@ let rec step (e0 : exp) : result = match e0 with
        * projl(e) ∉ val
        * projl(e) —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
       end
   | Projr(e1) -> begin match step e1 with
       (* [Projr-Pair]
@@ -366,6 +377,7 @@ let rec step (e0 : exp) : result = match e0 with
        * projr(e) ∉ val
        * projr(e) —↛ *)
       | Stuck -> Stuck
+      | Err -> Err
       end
   (* x is not closed *)
   | Var(x) -> raise NOT_CLOSED_ERROR
@@ -394,6 +406,7 @@ let rec step (e0 : exp) : result = match e0 with
            * v(e) ∉ val
            * v(e) —↛ *)
           | Stuck -> Stuck
+          | Err -> Err
           end
       (* [Apply-Cong-1]
        * e₁ —→ e₁′
@@ -406,13 +419,16 @@ let rec step (e0 : exp) : result = match e0 with
        * e₁(e₂) ∉ val
        * e₁(e₂) –↛ *)
       | Stuck -> Stuck
-      end
+      | Err -> Err
+    end
+  | Error -> Stuck
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
 let rec step_star (e : exp) : exp = match step e with
   | Val(v) -> exp_of_val v
   | Step(e') -> step_star e'
   | Stuck -> e
+  | Err -> e
 (*
 (***********************************
  * Syntax for type system contexts *
@@ -495,7 +511,7 @@ let rec infer (tenv : type_env) (e0 : exp) : ty = match e0 with
   (* [IsZero]
    * Γ ⊢ e : nat
    * ⟹
-   * Γ ⊢ iszero(e) : bool 
+   * Γ ⊢ iszero(e) : bool
    *)
   | IsZero(e) ->
       let t = infer tenv e in
@@ -564,6 +580,7 @@ let rec infer (tenv : type_env) (e0 : exp) : ty = match e0 with
         t12
       |_ -> raise TYPE_ERROR
     end
+  | Error -> raise TODO
 
 let _ =
   let free_vars_tests =
