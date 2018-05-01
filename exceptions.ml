@@ -425,14 +425,14 @@ let rec step (e0 : exp) : result = match e0 with
        * error(t₂) —→ error *)
       | Err -> Err
     end
-  | Error -> Stuck
+  | Error -> Err
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
 let rec step_star (e : exp) : exp = match step e with
   | Val(v) -> exp_of_val v
   | Step(e') -> step_star e'
   | Stuck -> e
-  | Err -> e
+  | Err -> Error
 (*
 (***********************************
  * Syntax for type system contexts *
