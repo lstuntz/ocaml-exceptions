@@ -56,6 +56,7 @@ type exp =
   | Projl of exp
   | Projr of exp
   | Error
+  | TryWith of exp * exp
 [@@deriving show {with_path = false}]
 
 (*********************
@@ -106,6 +107,7 @@ let rec free_vars (e0 : exp) : string_set = match e0 with
   | Projl(e) -> free_vars e
   | Projr(e) -> free_vars e
   | Error -> StringSet.empty
+  | TryWith(e1, e2) -> StringSet.empty
 
 exception SCOPE_ERROR
 exception TYPE_ERROR
@@ -143,6 +145,7 @@ let rec esubst_e_i (x : var) (e' : exp) (e0 : exp) : exp = match e0 with
       else Lambda(y,t,esubst_e_i x e' e)
   | Apply(e1,e2) -> Apply(esubst_e_i x e' e1,esubst_e_i x e' e2)
   | Error -> Error
+  | TryWith(e1,e2) -> TryWith(esubst_e_i x e' e1, esubst_e_i x e' e2)
 
 exception NOT_CLOSED_ERROR
 
@@ -426,6 +429,25 @@ let rec step (e0 : exp) : result = match e0 with
       | Err -> Err
     end
   | Error -> Err
+  | TryWith(e1,e2) -> begin match step e1 with
+      (* [E-TryV]
+       * try v₁ with t₂ —→ v₁ *)
+      | Val(v) -> Step(exp_of_val v)
+      (* [E-Try]
+       * t₁ —→ t₁′
+       * ⟹
+       * try t₁ with t₂ —→ try t₁′ with t₂ *)
+      | Step(e') -> Step(TryWith(e',e2))
+      (* e ∉ val
+       * e —↛
+       * ⟹
+       * try t with t ∉ val
+       * try t with t —↛ *)
+      | Stuck -> Stuck
+      (* [E-TryError]
+       * try error with t₂ —→ t₂ *)
+      | Err -> Step(e2)
+      end
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
 let rec step_star (e : exp) : exp = match step e with
@@ -584,7 +606,18 @@ let rec infer (tenv : type_env) (e0 : exp) : ty = match e0 with
         t12
       |_ -> raise TYPE_ERROR
     end
+
   | Error -> raise TODO
+
+  (* Γ ⊢ t₁ : τ   Γ ⊢ t₂ : τ
+   * ———————————————————————
+   * Γ ⊢ try t₁ with t₂ : τ
+  *)
+  | TryWith(e1,e2) ->
+    let t1 = infer tenv e1 in
+    let t2 = infer tenv e2 in
+    if not (t1 = t2) then raise TYPE_ERROR else
+    t1
 
 let _ =
   let free_vars_tests =
@@ -669,5 +702,18 @@ let _ =
   print_endline ("TESTS PASSED: " ^ string_of_int (fv_passed + ty_passed)) ;
   print_endline ("TESTS FAILED: " ^ string_of_int (fv_failed + ty_failed)) ;
   print_endline ("TESTS TODO: " ^ string_of_int (fv_todo + ty_todo))
+
+let infer_tests =
+  let m : exp = Lambda("x",Nat,Zero) in
+  let n : exp = Apply(m,Error) in
+  let e : exp = Error in
+  print_endline "**";
+  print_endline (show_ty (infer [] m));
+  print_endline (show_exp (step_star m));
+  print_endline (show_result (step n));
+  print_endline (show_exp (step_star n));
+  print_endline (show_result (step e))
+
+
 
 (* Name: <Lindsey Stuntz> *)
