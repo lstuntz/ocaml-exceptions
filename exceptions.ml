@@ -11,20 +11,28 @@ open StringSetMap
  *
  * To run this file, execute:
  *
- *     > make hw3
+ *     > make exceptions
  *)
 
 (********************
  * Syntax for types *
  ********************)
 
-(* τ ∈ ty ⩴ bool | τ ⇒ τ | empty | unit | τ + τ | τ × τ
+(* X ∈ tvar ≈ 𝕊
+*)
+type tvar = string
+[@@deriving show {with_path = false}]
+
+(* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ
  *)
 type ty =
   | Bool
   | Nat
   | Fun of ty * ty
   | Prod of ty * ty
+  | TVar of tvar
+  | Forall of tvar * ty
+  | Exists of tvar * ty
 [@@deriving show {with_path = false}]
 
 (**************************
@@ -39,7 +47,10 @@ type var = string
 (* e ∈ exp ⩴ true | false | if(e){e}{e}
  *         | zero | succ(e) | pred(e) | iszero(e)
  *         | x | λx:τ.e | e e | ⟨e,e⟩
- *         | projl(e) | projr(e) | error
+ *         | projl(e) | projr(e)
+ *         | let x ≔ e in e | ΛX.e | e[τ]
+ *         | ⟨*τ,e⟩ as ∃X.τ | let ⟨*X,x⟩ = e in e
+ *         | error | try e with e
  *)
 type exp =
   | True
@@ -55,6 +66,11 @@ type exp =
   | Pair of exp * exp
   | Projl of exp
   | Projr of exp
+  | Let of var * exp * exp
+  | BigLambda of tvar * exp
+  | TyApply of exp * ty
+  | Pack of ty * exp * tvar * ty
+  | Unpack of tvar * var * exp * exp
   | Error
   | TryWith of exp * exp
 [@@deriving show {with_path = false}]
@@ -74,6 +90,8 @@ type natval =
  *           | n
  *           | ⟨v,v⟩
  *           | λ(x:τ).e
+ *           | ΛX.e
+ *           | ⟨*τ,v⟩ as ∃X.τ
 *)
 type value =
   | VTrue
@@ -81,7 +99,107 @@ type value =
   | VNat of natval
   | VPair of value * value
   | VLambda of var * ty * exp
+  | VBigLambda of tvar * exp
+  | VPack of ty * value * tvar * ty
 [@@deriving show {with_path = false}]
+
+(***********************************
+ * Syntax for type system contexts *
+ ***********************************)
+
+(* Γ ∈ tenv ≔ var ⇀ type
+*)
+type tscope = string_set
+[@@deriving show {with_path = false}]
+
+(* S ∈ scope ≔ ℘(tvar)
+*)
+type tenv = ty string_map
+[@@deriving show {with_path = false}]
+
+(****************************
+ * Free variables for types *
+ ****************************)
+
+(* FV ∈ type → ℘(tvar)
+ * tfree_vars τ ≡ FV(τ)
+*)
+let rec tfree_vars (t0 : ty) : string_set = match t0 with
+  | Bool -> StringSet.empty
+  | Nat -> StringSet.empty
+  | Prod(t1,t2) -> StringSet.union (tfree_vars t1) (tfree_vars t2)
+  | Fun(t1,t2) -> StringSet.union (tfree_vars t1) (tfree_vars t2)
+  | TVar(xt) -> StringSet.of_list [xt]
+  | Forall(xt,t) -> StringSet.remove xt (tfree_vars t)
+  | Exists(xt,t) -> StringSet.remove xt (tfree_vars t)
+
+(**************************
+ * Substitution for types *
+ **************************)
+
+(* An auxiliary function:
+ *
+ *   trename X X′ τ
+ *
+ * for renaming X to X′ in type τ, i.e., [X↦X′]τ
+*)
+let rec trename (xt : tvar) (xt' : tvar) (t0 : ty) : ty = match t0 with
+  | Bool -> Bool
+  | Nat -> Nat
+  | Prod(t1,t2) -> Prod(trename xt xt' t1,trename xt xt' t2)
+  | Fun(t1,t2) -> Fun(trename xt xt' t1,trename xt xt' t2)
+  | TVar(yt) -> if xt = yt then TVar(xt') else TVar(yt)
+  | Forall(yt,t) -> if xt = yt then Forall(yt,t) else Forall(yt,trename xt xt' t)
+  | Exists(yt,t) -> if xt = yt then Exists(yt,t) else Forall(yt,trename xt xt' t)
+
+(* An auxiliary function:
+ *
+ *   tfresh X τ′ τ = ⟨X′,τ″⟩
+ *
+ * which returns X′ and τ″ such that
+ *
+ *   X′ ∉ FV(τ′) ∪ (FV(τ) ∖ ❴X❵)
+ *   τ″ = [X↦X′]τ
+ *
+ * we first define an iterator helper function:
+ *
+ *   tfresh_i X X′ τ′ τ
+ *
+ * which tries the current candidate X′, and iterates to try X′ with a prime
+ * appended to the variable symbol if X′ isn't satisfactory.
+ *
+ * a call to
+ *
+ *   tfresh X τ′ τ
+ *
+ * runs the iterator with X as the current guess.
+*)
+let rec tfresh_i (xt : tvar) (xt' : tvar) (t' : ty) (t : ty) : tvar * ty =
+  if StringSet.mem xt' (StringSet.union (tfree_vars t') (tfree_vars (Forall(xt,t))))
+  then tfresh_i xt (xt' ^ "'") t' t
+  else (xt',trename xt xt' t)
+
+let tfresh (xt : tvar) (t' : ty) (t : ty) : tvar * ty = tfresh_i xt xt t' t
+
+(* The capture-avoiding substitution function for types.
+ *
+ * [_↦_]_ ∈ tvar × type × type → type
+ * tsubst X τ′ τ ≡ [X↦τ′]τ
+*)
+let rec tsubst (xt : tvar) (t' : ty) (t0 : ty) = match t0 with
+  | Bool -> Bool
+  | Nat -> Nat
+  | Prod(t1,t2) -> Prod(tsubst xt t' t1,tsubst xt t' t2)
+  | Fun(t1,t2) -> Fun(tsubst xt t' t1,tsubst xt t' t2)
+  | TVar(yt) -> if xt = yt then t' else TVar(yt)
+  | Forall(yt,t) ->
+    if xt = yt then Forall(xt,t) else
+      let (yt'',t'') = tfresh yt t' t in
+      Forall(yt'',tsubst xt t' t'')
+  | Exists(yt,t) ->
+    if xt = yt then Exists(xt,t) else
+      let (yt'',t'') = tfresh yt t' t in
+      Exists(yt'',tsubst xt t' t'')
 
 (**********************************
  * Free variables for expressions *
@@ -90,27 +208,35 @@ type value =
 (* FV ∈ exp → ℘(var)
  * efree_vars e ≡ FV(e)
  *)
-let rec free_vars (e0 : exp) : string_set = match e0 with
+let rec efree_vars (e0 : exp) : string_set = match e0 with
   | True -> StringSet.empty
   | False -> StringSet.empty
   | If(e1,e2,e3) ->
-      StringSet.union (StringSet.union (free_vars e1) (free_vars e2))
-        (free_vars e3)
+      StringSet.union (StringSet.union (efree_vars e1) (efree_vars e2))
+        (efree_vars e3)
   | Zero -> StringSet.empty
-  | Succ(e) -> free_vars e
-  | Pred(e) -> free_vars e
-  | IsZero(e) -> free_vars e
+  | Succ(e) -> efree_vars e
+  | Pred(e) -> efree_vars e
+  | IsZero(e) -> efree_vars e
   | Var(x) -> StringSet.of_list [x]
-  | Lambda(x,t,e) -> StringSet.remove x (free_vars e)
-  | Apply(e1,e2) -> StringSet.union (free_vars e1) (free_vars e2)
-  | Pair(e1,e2) -> StringSet.union (free_vars e1) (free_vars e2)
-  | Projl(e) -> free_vars e
-  | Projr(e) -> free_vars e
+  | Lambda(x,t,e) -> StringSet.remove x (efree_vars e)
+  | Apply(e1,e2) -> StringSet.union (efree_vars e1) (efree_vars e2)
+  | Pair(e1,e2) -> StringSet.union (efree_vars e1) (efree_vars e2)
+  | Projl(e) -> efree_vars e
+  | Projr(e) -> efree_vars e
+  | Let(x,e1,e2) ->
+    StringSet.union
+      (efree_vars e1)
+      (StringSet.remove x (efree_vars e2))
+  | BigLambda(xt,e) -> efree_vars e
+  | TyApply(e,t) -> efree_vars e
+  | Pack(t1,e,xt,t2) -> efree_vars e
+  | Unpack(xt,x,e1,e2) ->
+    StringSet.union
+      (efree_vars e1)
+      (StringSet.remove x (efree_vars e2))
   | Error -> StringSet.empty
-  | TryWith(e1, e2) -> StringSet.empty
-
-exception SCOPE_ERROR
-exception TYPE_ERROR
+  | TryWith(e1, e2) -> raise TODO
 
 (***********************************************
  * Substitution for expressions in expressions *
@@ -144,6 +270,17 @@ let rec esubst_e_i (x : var) (e' : exp) (e0 : exp) : exp = match e0 with
       then Lambda(x,t,e)
       else Lambda(y,t,esubst_e_i x e' e)
   | Apply(e1,e2) -> Apply(esubst_e_i x e' e1,esubst_e_i x e' e2)
+  | Let(y,e1,e2) ->
+    if x = y
+    then Let(x,esubst_e_i x e' e1,e2)
+    else Let(y,esubst_e_i x e' e1,esubst_e_i x e' e2)
+  | BigLambda(xt,e) -> BigLambda(xt,esubst_e_i x e' e)
+  | TyApply(e,t) -> TyApply(esubst_e_i x e' e,t)
+  | Pack(t1,e,xt,t2) -> Pack(t1,esubst_e_i x e' e,xt,t2)
+  | Unpack(xt,y,e1,e2) ->
+    if x = y
+    then Unpack(xt,x,esubst_e_i x e' e1,e2)
+    else Unpack(xt,y,esubst_e_i x e' e1,esubst_e_i x e' e2)
   | Error -> Error
   | TryWith(e1,e2) -> TryWith(esubst_e_i x e' e1, esubst_e_i x e' e2)
 
@@ -158,9 +295,67 @@ exception NOT_CLOSED_ERROR
  * Raises exception if e′ is not closed
  *)
 let esubst_e (x : var) (e' : exp) (e : exp) : exp =
-  if StringSet.equal (free_vars e') StringSet.empty
+  if StringSet.equal (efree_vars e') StringSet.empty
   then esubst_e_i x e' e
   else raise NOT_CLOSED_ERROR
+
+  (*****************************************
+   * Substitution for types in expressions *
+   *****************************************)
+
+  (* Non-capture-avoiding substitution for types in expressions. Because this is
+   * non-capture-avoiding, it assumes that the type being substituted is closed.
+   *
+   *   esubst_t_i X τ′ e
+   *
+   * Assumption: τ′ is closed
+   *
+   * Do not use this function directly. Instead, use esubst_t which checks the
+   * invariant.
+   *)
+  let rec esubst_t_i (xt : tvar) (t' : ty) (e0 : exp) : exp = match e0 with
+    | True -> True
+    | False -> False
+    | If(e1,e2,e3) -> If(esubst_t_i xt t' e1,esubst_t_i xt t' e2,esubst_t_i xt t' e3)
+    | Zero -> Zero
+    | Succ(e) -> Succ(esubst_t_i xt t' e)
+    | Pred(e) -> Pred(esubst_t_i xt t' e)
+    | IsZero(e) -> IsZero(esubst_t_i xt t' e)
+    | Pair(e1,e2) -> Pair(esubst_t_i xt t' e1,esubst_t_i xt t' e2)
+    | Projl(e) -> Projl(esubst_t_i xt t' e)
+    | Projr(e) -> Projr(esubst_t_i xt t' e)
+    | Var(x) -> Var(x)
+    | Let(x,e1,e2) -> Let(x,esubst_t_i xt t' e1,esubst_t_i xt t' e2)
+    | Lambda(x,t,e) -> Lambda(x,tsubst xt t' t,esubst_t_i xt t' e)
+    | Apply(e1,e2) -> Apply(esubst_t_i xt t' e1,esubst_t_i xt t' e2)
+    | BigLambda(yt,e) ->
+        if xt = yt
+        then BigLambda(xt,e)
+        else BigLambda(yt,esubst_t_i xt t' e)
+    | TyApply(e,t) -> TyApply(esubst_t_i xt t' e,tsubst xt t' t)
+    | Pack(t1,e,yt,t2) ->
+        if xt = yt
+        then Pack(tsubst xt t' t1,esubst_t_i xt t' e,xt,t2)
+        else Pack(tsubst xt t' t1,esubst_t_i xt t' e,yt,tsubst xt t' t2)
+    | Unpack(yt,x,e1,e2) ->
+        if xt = yt
+        then Unpack(xt,x,esubst_t_i xt t' e1,e2)
+        else Unpack(xt,x,esubst_t_i xt t' e1,esubst_t_i xt t' e2)
+    | Error -> raise TODO
+    | TryWith(e1,e2) -> raise TODO
+
+  (* A version of non-capture-avoiding substitution that raises an exception if
+   * its required assumptions are not satisfied.
+   *
+   * [_↦_]_ ∈ tvar × type × exp → exp
+   * esubst_t X τ′ e ≡ [X↦τ′]e
+   *
+   * Raises exception if τ′ is not closed
+   *)
+  let esubst_t (x : var) (t' : ty) (e : exp) : exp =
+    if StringSet.equal (tfree_vars t') StringSet.empty
+    then esubst_t_i x t' e
+    else raise NOT_CLOSED_ERROR
 
 (**********************************
  * Small step transition relation *
@@ -178,6 +373,8 @@ let rec exp_of_val (v0 : value) : exp = match v0 with
   | VNat(nv) -> exp_of_natval nv
   | VPair(v1,v2) -> Pair(exp_of_val v1,exp_of_val v2)
   | VLambda(x,t,e) -> Lambda(x,t,e)
+  | VBigLambda(xt,e) -> BigLambda(xt,e)
+  | VPack(t1,v,xt,t2) -> Pack(t1,exp_of_val v,xt,t2)
 
 (* A result is either a value, an expression, or the symbol `stuck`.
  *
@@ -428,6 +625,84 @@ let rec step (e0 : exp) : result = match e0 with
        * error(t₂) —→ error *)
       | Err -> Err
     end
+  | Let(x,e1,e2) -> begin match step e1 with
+      (* [Let-Val]
+       * let x ≔ v in e —→ [x↦v]e *)
+      | Val(v1) -> Step(esubst_e x (exp_of_val v1) e2)
+      (* [Let-Cong]
+       * e₁ —→ e₁′
+       * ⟹
+       * let x ≔ e₁ in e₂ —→ let x = e₁′ in e₂ *)
+      | Step(e1') -> Step(Let(x,e1',e2))
+      (* e₁ ∉ val
+       * e₁ —↛
+       * ⟹
+       * let x ≔ e₁ in e₂ ∉ val
+       * let x ≔ e₁ in e₂ —↛ *)
+      | Stuck -> Stuck
+      | Err -> Err
+    end
+  (* ΛX.e ∈ val *)
+  | BigLambda(xt,e) -> Val(VBigLambda(xt,e))
+  | TyApply(e,t) -> begin match step e with
+      (* [Type-Apply-Lambda]
+       * (ΛX.e)[τ] —→ [X↦τ]e *)
+      | Val(VBigLambda(xt,e')) -> Step(esubst_t xt t e')
+      (* ∄X,e. v = ΛX.e
+       * ⟹
+       * v[τ] ∉ val
+       * v[τ] —↛ *)
+      | Val(_) -> Stuck
+      (* [Type-Apply-Cong]
+       * e —→ e′
+       * ⟹
+       * e[τ] —→ e′[τ] *)
+      | Step(e') -> Step(TyApply(e',t))
+      (* e ∉ val
+       * e —↛
+       * ⟹
+       * e[τ] ∉ val
+       * e[τ] —↛ val *)
+      | Stuck -> Stuck
+      | Err -> Err
+    end
+  | Pack(t1,e,xt,t2) -> begin match step e with
+      (* ⟨*τ,v⟩ as ∃X.τ ∈ val *)
+      | Val(v) -> Val(VPack(t1,v,xt,t2))
+      (* [Pack-Cong]
+       * e —→ e′
+       * ⟹
+       * ⟨*τ,e⟩ as ∃X.τ —→ ⟨*τ,e′⟩ as ∃X.τ *)
+      | Step(e') -> Step(Pack(t1,e',xt,t2))
+      (* e ∉ val
+       * e —↛
+       * ⟹
+       * ⟨*τ,e⟩ as ∃X.τ ∉ val
+       * ⟨*τ,e⟩ as ∃X.τ —↛ *)
+      | Stuck -> Stuck
+      | Err -> Err
+    end
+  | Unpack(xt,x,e1,e2) -> begin match step e1 with
+      (* [Unpack-Pack]
+       * let ⟨*X,x⟩ ≔ ⟨*τ′,v⟩ as ∃X.τ in e —→ [X↦τ′][x↦v]e *)
+      | Val(VPack(t1,v,yt,t2)) -> Step(esubst_t xt t1 (esubst_e x (exp_of_val v) e2))
+      (* ∄ τ′,v′,X,τ. v = ⟨*τ′,v′⟩ as ∃X.τ
+       * ⟹
+       * let ⟨*X,x⟩ ≔ v in e ∉ val
+       * let ⟨*X,x⟩ ≔ v in e —↛ *)
+      | Val(_) -> Stuck
+      (* [Unpack-Cong]
+       * e₁ —→ e₁′
+       * let ⟨*X,x⟩ ≔ e₁ in e₂ —→ let ⟨*X,x⟩ ≔ e₁′ in e₂ *)
+      | Step(e1') -> Step(Unpack(xt,x,e1',e2))
+      (* e₁ ∉ val
+       * e₁ —↛
+       * ⟹
+       * let ⟨*X,x⟩ ≔ e₁ in e₂ ∉ val
+       * let ⟨*X,x⟩ ≔ e₁ in e₂ —↛ *)
+      | Stuck -> Stuck
+      | Err -> Err
+    end
   | Error -> Err
   | TryWith(e1,e2) -> begin match step e1 with
       (* [E-TryV]
@@ -455,265 +730,415 @@ let rec step_star (e : exp) : exp = match step e with
   | Step(e') -> step_star e'
   | Stuck -> e
   | Err -> Error
-(*
-(***********************************
- * Syntax for type system contexts *
- ***********************************)
 
-(* Γ ∈ tenv ≔ var ⇀ type
-*)
-type tscope = string_set
-[@@deriving show {with_path = false}]
+  (**********************
+   * Well-scoped relation
+   **********************)
 
-(* S ∈ scope ≔ ℘(tvar)
-*)
-type tenvv = ty string_map
-[@@deriving show {with_path = false}] *)
-
-
-(* type type_env = (string * ty) list *)
+  (* The relation:
+   *
+   *   S ⊢ τ
+   *
+   * scope_ok S τ = true ⟺  S ⊢ τ
+   *)
+  let rec scope_ok (s : tscope) (t0 : ty) : bool = match t0 with
+    (* [Bool]
+     * S ⊢ bool *)
+    | Bool -> true
+    (* [Nat]
+     * S ⊢ nat *)
+    | Nat -> true
+    (* [Prod]
+     * S ⊢ τ₁
+     * S ⊢ τ₂
+     * ⟹
+     * S ⊢ τ₁ × τ₂ *)
+    | Prod(t1,t2) ->
+      if scope_ok s t1 && scope_ok s t2 then true else false
+    (* [Fun]
+     * S ⊢ τ₁
+     * S ⊢ τ₂
+     * ⟹
+     * S ⊢ τ₁ → τ₂ *)
+    | Fun(t1,t2) ->
+      if scope_ok s t1 && scope_ok s t2 then true else false
+    (* [TVar]
+     * X ∈ S
+     * ⟹
+     * S ⊢ X *)
+    | TVar(xt) ->
+      if StringSet.mem xt s then true else false
+    (* [Forall]
+     * S∪{X} ⊢ τ
+     * ⟹
+     * S ⊢ ∀X.τ *)
+    | Forall(xt,t) ->
+      if scope_ok (StringSet.union s (StringSet.of_list [xt])) t then true else false
+    (* [Exists]
+     * S∪{X} ⊢ τ
+     * ⟹
+     * S ⊢ ∃X.τ *)
+    | Exists(xt,t) ->
+      if scope_ok (StringSet.union s (StringSet.of_list [xt])) t then true else false
 
 (***********************
  * Well-typed relation *
  ***********************)
 
-type type_env = (string * ty) list
+ (* An auxiliary function for testing the equality of two types, modulo alpha
+  * conversion.
+  *
+  * First, a helper function tequal_r which keeps track of which bindings are
+  * equal by assigning them to unique numbers.
+  *)
+ let rec tequal_r (l : int) (t1e : int string_map) (t2e : int string_map) (t1 : ty) (t2 : ty) : bool = match t1 , t2 with
+   | Bool , Bool -> true
+   | Nat , Nat -> true
+   | Fun(t11,t12) , Fun(t21,t22) -> tequal_r l t1e t2e t11 t21 && tequal_r l t1e t2e t12 t22
+   | Prod(t11,t12) , Prod(t21,t22) -> tequal_r l t1e t2e t11 t21 && tequal_r l t1e t2e t12 t22
+   | TVar(x) , TVar(y) ->
+       if StringMap.mem x t1e && StringMap.mem y t2e
+       then StringMap.find x t1e = StringMap.find y t2e
+       else x = y
+   | Forall(xt,t1) , Forall(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
+   | Forall(_) , _ -> false | _ , Forall(_) -> false
+   | Exists(xt,t1) , Exists(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
+   | _ , _ -> false
 
-(* A metafunction to look up a variable's type in the type environment *)
-let rec infer_var (tenv : type_env) (x : string) : ty = match tenv with
-  | [] -> raise SCOPE_ERROR
-  | (y,t)::tenv' -> if x = y then t else infer_var tenv' x
+   (* tequal τ₁ τ₂ = true ⟺  τ₁ ≈ᵅ τ₂
+    *
+    * !! use tequal in your implementation of infer anytime you need to compare
+    * two types for equality
+    *)
+   let tequal (t1 : ty) (t2 : ty) : bool = tequal_r 1 StringMap.empty StringMap.empty t1 t2
 
-(* Typing relation encoded as an inference metafunction. *)
-let rec infer (tenv : type_env) (e0 : exp) : ty = match e0 with
-  (* ———————————————
-   * Γ ⊢ true : bool
-   *)
+   exception TYPE_ERROR
+
+(* The relation:
+ *
+ *   S , Γ ⊢ e : τ
+ *
+ * infer S Γ e = τ ⟺  S , Γ ⊢ : τ
+*)
+let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
+  (* [True]
+   * S , Γ ⊢ true : bool *)
   | True -> Bool
-
-  (* ———————————————
-   * Γ ⊢ true : bool
-   *)
+  (* [False]
+   * S , Γ ⊢ false : bool *)
   | False -> Bool
-
-  (* Γ ⊢ e₁ : bool
-   * Γ ⊢ e₂ : τ
-   * Γ ⊢ e₃ : τ
-   * ———————————————–––––––
-   * Γ ⊢ if(e₁){e₂}{e₃} : τ
-   *)
-  | If(e1,e2,e3) ->
-      let t1 = infer tenv e1 in
-      let t2 = infer tenv e2 in
-      let t3 = infer tenv e3 in
-      if not (t1 = Bool) then raise TYPE_ERROR else
-      if not (t2 = t3) then raise TYPE_ERROR else
-        t2
-  (*
-   * Γ ⊢ zero : nat
-   *)
-  | Zero -> Nat
-
-  (* [Succ]
-   * Γ ⊢ e : nat
+  (* [If]
+   * S , Γ ⊢ e₁ : bool
+   * S , Γ ⊢ e₂ : τ
+   * S , Γ ⊢ e₃ : τ
    * ⟹
-   * Γ ⊢ succ(e) : nat
-   *)
-  | Succ(e) ->
-      let t = infer tenv e in
-      if not (t = Nat) then raise TYPE_ERROR else
-        Nat
-
-  (*
+   * S , Γ ⊢ if(e₁){e₂}{e₃} : τ *)
+  | If(e1,e2,e3) ->
+    let t1 = infer s g e1 in
+    let t2 = infer s g e2 in
+    let t3 = infer s g e3 in
+    if not (t1 = Bool) then raise TYPE_ERROR else
+    if not (t2 = t3) then raise TYPE_ERROR else
+      t2
+  (* [Zero]
+   * S , Γ ⊢ zero : nat *)
+  | Zero -> Nat
+  (* [Succ]
    * S , Γ ⊢ e : nat
    * ⟹
-   * S , Γ ⊢ pred(e) : nat
-   *)
-  | Pred(e) ->
-      let t = infer tenv e in
-      if not (t = Nat) then raise TYPE_ERROR else
-        Nat
-
-  (* [IsZero]
-   * Γ ⊢ e : nat
+   * S , Γ ⊢ succ(e) : nat *)
+  | Succ(e) ->
+    let t = infer s g e in
+    if not (t = Nat) then raise TYPE_ERROR else
+      Nat
+  (* [Pred]
+   * S , Γ ⊢ e : nat
    * ⟹
-   * Γ ⊢ iszero(e) : bool
-   *)
+   * S , Γ ⊢ pred(e) : nat *)
+  | Pred(e) ->
+    let t = infer s g e in
+    if not (t = Nat) then raise TYPE_ERROR else
+      Nat
+  (* [IsZero]
+   * S , Γ ⊢ e : nat
+   * ⟹
+   * S , Γ ⊢ iszero(e) : bool *)
   | IsZero(e) ->
-      let t = infer tenv e in
-      if not (t = Nat) then raise TYPE_ERROR else
-          Bool
-
-  (* x:τ ∈ Γ
-   * —————————
-   * Γ ⊢ x : τ
-   *)
-  | Var(x) -> infer_var tenv x
-
-  (* x:τ₁,Γ ⊢ e : τ₂
-   * ————————————————————
-   * Γ ⊢ λx:τ.e : τ₁ ⇒ τ₂
-   *)
-  | Lambda(x,t1,e) ->
-      let t2 = infer ((x,t1)::tenv) e in
-      Fun(t1,t2)
-
-  (* Γ ⊢ e₁ : τ₁ ⇒ τ₂
-   * Γ ⊢ e₂ : τ₁
-   * ——————————————————————————————
-   * Γ ⊢ e₁ e₂ : τ₂
-   *)
-  | Apply(e1,e2) ->
-      let t1 = infer tenv e1 in
-      let t2 = infer tenv e2 in
-      begin match t1 with
-      | Fun(t11,t12) ->
-          if not (t11 = t2) then raise TYPE_ERROR else
-          t12
-      | _ -> raise TYPE_ERROR
-      end
-
-  (* Γ ⊢ e₁ : τ₁
-   * Γ ⊢ e₂ : τ₂
-   * ———————————————————————
-   * Γ ⊢ ⟨e₁,e₂⟩ : (τ₁ × τ₂)
-   *)
+    let t = infer s g e in
+    if not (t = Nat) then raise TYPE_ERROR else
+      Bool
+  (* [Pair]
+   * S , Γ ⊢ e₁ : τ₁
+   * S , Γ ⊢ e₂ : τ₂
+   * ⟹
+   * S , Γ ⊢ ⟨e₁,e₂⟩ : τ₁ × τ₂ *)
   | Pair(e1,e2) ->
-    let t1 = infer tenv e1 in
-    let t2 = infer tenv e2 in
+    let t1 = infer s g e1 in
+    let t2 = infer s g e2 in
     Prod(t1,t2)
-
-  (* Γ ⊢ e : (τ₁ × τ₂)
-   * —————————————————
-   * Γ ⊢ projl(e) : τ₁
-   *)
+  (* [Projl]
+   * S , Γ ⊢ e : τ₁ × τ₂
+   * ⟹
+   * S , Γ ⊢ projl(e) : τ₁ *)
   | Projl(e) ->
-    let t1 = infer tenv e in
-    begin match t1 with
-      |Prod(t11,t12) ->
-        t11
-      |_ -> raise TYPE_ERROR
+    let t = infer s g e in
+    begin match t with
+      | Prod(t1,_) -> t1
+      | _ -> raise TYPE_ERROR
     end
-
-  (* Γ ⊢ e : (τ₁ × τ₂)
-   * —————————————————
-   * Γ ⊢ projr(e) : τ₂
-   *)
+  (* [Projr]
+   * S , Γ ⊢ e : τ₁ × τ₂
+   * ⟹
+   * S , Γ ⊢ projr(e) : τ₂ *)
   | Projr(e) ->
-    let t1 = infer tenv e in
-    begin match t1 with
-      |Prod(t11,t12) ->
-        t12
-      |_ -> raise TYPE_ERROR
+    let t = infer s g e in
+    begin match t with
+      | Prod(_,t2) -> t2
+      | _ -> raise TYPE_ERROR
     end
-
+  (* [Var]
+   * Γ(x) = τ
+   * ⟹
+   * S , Γ ⊢ x : τ *)
+  | Var(x) ->
+    StringMap.find x g
+  (* [Var]
+   * S , Γ ⊢ e₁ : τ₁
+   * S , Γ[x↦τ₁] ⊢ e₂ : τ₂
+   * ⟹
+   * S , Γ ⊢ let x ≔ e₁ in e₂ : τ₂ *)
+  | Let(x,e1,e2) ->
+    let t1 = infer s g e1 in
+    let t2 = infer s (StringMap.add x t1 g) e2 in
+    t2
+  (* [Lambda]
+   * S ⊢ τ₁
+   * S , Γ[x↦τ₁] ⊢ e : τ₂
+   * ⟹
+   * S , Γ ⊢ λ(x:τ₁).e : τ₁ → τ₂ *)
+  | Lambda(x,t1,e) ->
+    if not (scope_ok s t1) then raise TYPE_ERROR else
+      let t2 = infer s (StringMap.add x t1 g) e in
+      Fun(t1,t2)
+  (* [Apply]
+   * S , Γ ⊢ e₁ : τ₁ → τ₂
+   * S , Γ ⊢ e₂ : τ₁
+   * ⟹
+   * S , Γ ⊢ e₁(e₂) : τ₂ *)
+  | Apply(e1,e2) ->
+    let t' = infer s g e1 in
+    let t1 = infer s g e2 in
+    begin match t' with
+      | Fun(t1',t2) -> if not (tequal t1 t1') then raise TYPE_ERROR else t2
+      | _ -> raise TYPE_ERROR
+    end
+  (* [TypeLambda]
+   * S∪{X} , Γ ⊢ e : τ
+   * ⟹
+   * S , Γ ⊢ ΛX.e : ∀X.τ *)
+  | BigLambda(xt,e) ->
+    let t = infer (StringSet.union s (StringSet.of_list [xt])) g e in
+    Forall(xt,t)
+  (* [TypeApply]
+   * S ⊢ τ′
+   * S , Γ ⊢ e : ∀X.τ
+   * ⟹
+   * S , Γ ⊢ e[τ′] : [X↦τ′]τ *)
+  | TyApply(e,t') ->
+    if not (scope_ok s t') then raise TYPE_ERROR else
+      let t1 = infer s g e in
+      begin match t1 with
+        | Forall(xt,t) -> tsubst xt t' t
+        | _ -> raise TYPE_ERROR
+      end
+  (* [Pack]
+   * S , Γ ⊢ e : [X↦τ′]τ
+   * ⟹
+   * S , Γ ⊢ ⟨*τ′,e⟩ as ∃ X.τ : ∃X.τ *)
+  | Pack(t1,e,xt,t2) ->
+    let t = infer s g e in
+    let t' = tsubst xt t1 t2 in
+    if not (tequal t t') then raise TYPE_ERROR else
+      Exists(xt,t2)
+  (* [Unpack-Alt]
+   * S ⊢ τ₂
+   * S , Γ ⊢ e₁ : ∃Y.τ₁
+   * S∪{X} , Γ[x↦[Y↦X]τ₁] ⊢ e₂ : τ₂
+   * ⟹
+   * let ⟨*X,x⟩ ≔ e₁ in e₂ : τ₂ *)
+  | Unpack(xt,x,e1,e2) ->
+    let t = infer s g e1 in
+    begin match t with
+      | Exists(yt,t1) ->
+        let t2 = infer (StringSet.union s (StringSet.of_list [xt])) (StringMap.add x (trename yt xt t1) g) e2 in
+        if not (scope_ok s t2) then raise TYPE_ERROR else
+          t2
+      | _ -> raise TYPE_ERROR
+    end
   | Error -> raise TODO
-
   (* Γ ⊢ t₁ : τ   Γ ⊢ t₂ : τ
    * ———————————————————————
    * Γ ⊢ try t₁ with t₂ : τ
   *)
   | TryWith(e1,e2) ->
-    let t1 = infer tenv e1 in
-    let t2 = infer tenv e2 in
+    let t1 = infer s g e1 in
+    let t2 = infer s g e2 in
     if not (t1 = t2) then raise TYPE_ERROR else
     t1
 
-let _ =
-  let free_vars_tests =
-    (* test expressions and sets of free variables they should return *)
-    [ Var("x")                                     , StringSet.of_list ["x"]
-    ; Lambda("x",Bool,Var("x"))                       , StringSet.of_list []
-    ; Lambda("x",Bool,Var("y"))                       , StringSet.of_list ["y"]
-    (* ; App(Lambda("x",Bool,Var("x")),Var("y"))         , StringSet.of_list ["y"]
-    ; Absurd(Var("x"),Bool)                        , StringSet.of_list ["x"]
-    ; Lambda("x",Bool,Bullet)                         , StringSet.of_list []
-    ; Inl(Var("x"),Sum(Unit,Unit))                 , StringSet.of_list ["x"]
-    ; Inr(Var("y"),Sum(Unit,Unit))                 , StringSet.of_list ["y"]
-    ; Case(Var("x"),("y",Var("y")),("a",Var("b"))) , StringSet.of_list ["x";"b"]
-    ; Lambda("x",Bool,Pair(Var("x"),Var("y")))        , StringSet.of_list ["y"]
-    ; Projl(Pair(Var("x"),Bullet))                 , StringSet.of_list ["x"] *)
-    ; Projr(Pair(Lambda("x",Bool,Var("x")),Var("y"))) , StringSet.of_list ["y"]
-    ]
-  in
-  let (fv_passed,fv_failed,fv_todo) =
-    List.fold_left begin fun (passed,failed,todo) (e,xs) ->
-      try
-        if not (StringSet.equal xs (free_vars e))
-        then begin
-          print_endline "!!FAILED:" ;
-          print_endline "<free_vars>" ;
-          print_endline ("-------- " ^ show_exp e) ;
-          print_endline ("RETURNED " ^ show_string_set (free_vars e)) ;
-          print_endline ("EXPECTED " ^ show_string_set xs) ;
-          (passed,failed+1,todo)
-        end
-        else begin
-          print_endline "PASSED:" ;
-          print_endline "<free_vars>" ;
-          print_endline ("-- " ^ (show_exp e)) ;
-          (passed+1,failed,todo)
-        end
-      with TODO ->
-        print_endline "!!TODO:" ;
-        print_endline "<free_vars>" ;
-        print_endline ("-- " ^ show_exp e) ;
-        (passed,failed,todo+1)
-    end (0,0,0) free_vars_tests
-  in
-  let infer_tests =
-    (* test expressions and the types that should be inferred for them *)
-    [ Lambda("x",Nat,Var("x"))                                            , Fun(Nat,Nat)
-    (* ; App(Lambda("x",Unit,Var("x")),Bullet)                                , Unit
-    ; Inl(Bullet,Sum(Unit,Bool))                                        , Sum(Unit,Bool)
-    ; Inr(True,Sum(Unit,Bool))                                          , Sum(Unit,Bool)
-    ; Lambda("x",Sum(Unit,Bool),Case(Var("x"),("y",False),("z",Var("z")))) , Fun(Sum(Unit,Bool),Bool)
-    ; Pair(Bullet,False)                                                , Prod(Unit,Bool)
-    ; Lambda("x",Prod(Unit,Bool),Projl(Var("x")))                          , Fun(Prod(Unit,Bool),Unit)
-    ; Lambda("x",Prod(Unit,Bool),Projr(Var("x")))                          , Fun(Prod(Unit,Bool),Bool) *)
-    ]
-  in
-  let (ty_passed,ty_failed,ty_todo) =
-    List.fold_left begin fun (passed,failed,todo) (e,t) ->
-      try
-        if not (t = infer [] e)
-        then begin
-          print_endline "!!FAILED:" ;
-          print_endline "<infer>" ;
-          print_endline ("-------- " ^ show_exp e) ;
-          print_endline ("RETURNED " ^ show_ty (infer [] e)) ;
-          print_endline ("EXPECTED " ^ show_ty t) ;
-          (passed,failed+1,todo)
-        end
-        else begin
-          print_endline "PASSED:" ;
-          print_endline "<infer>" ;
-          print_endline ("-- " ^ (show_exp e)) ;
-          (passed+1,failed,todo)
-        end
-      with TODO ->
-        print_endline "!!TODO:" ;
-        print_endline "<infer>" ;
-        print_endline ("-- " ^ show_exp e) ;
-        (passed,failed,todo+1)
-    end (0,0,0) infer_tests
-  in
-  print_endline "" ;
-  print_endline ("TESTS PASSED: " ^ string_of_int (fv_passed + ty_passed)) ;
-  print_endline ("TESTS FAILED: " ^ string_of_int (fv_failed + ty_failed)) ;
-  print_endline ("TESTS TODO: " ^ string_of_int (fv_todo + ty_todo))
+(***********
+ * Testing *
+ ***********)
+
+type 'a test_result =
+  | R of 'a
+  | TypeError
+  | NotClosedError
+[@@deriving show {with_path = false}]
+
+let step_test_result (e : exp) : result test_result =
+  try
+    R(step e)
+  with
+  | TYPE_ERROR -> TypeError
+  | NOT_CLOSED_ERROR -> NotClosedError
+
+let infer_test_result (e : exp) : ty test_result =
+  try
+    R(infer StringSet.empty StringMap.empty e)
+  with
+  | TYPE_ERROR -> TypeError
+  | NOT_CLOSED_ERROR -> NotClosedError
+
+let step_tests : test_block =
+  let pid : exp = BigLambda("X",Lambda("x",TVar("X"),Var("x"))) in
+  let pidid : exp = Lambda("x",Forall("X",Fun(TVar("X"),TVar("X"))),Var("x")) in
+  let ppid : exp = BigLambda("X",pid) in
+  let fiveo : exp = Pack(Nat,Pair(Zero,Lambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X")))) in
+  let unp : exp = Unpack("Y","y",fiveo,Pack(TVar("Y"),Apply(Projr(Var("y")),Projl(Var("y"))),"Z",TVar("Z"))) in
+  TestBlock
+    ( "STEP"
+    , [ pid                           , R(Val(VBigLambda("X",Lambda("x",TVar("X"),Var("x")))))
+      ; TyApply(pid,Nat)              , R(Step(Lambda("x",Nat,Var("x"))))
+      ; TyApply(pid,Bool)             , R(Step(Lambda("x",Bool,Var("x"))))
+      ; TyApply(pid,TVar("Y"))        , NotClosedError
+      ; TyApply(Apply(pidid,pid),Nat) , R(Step(TyApply(pid,Nat)))
+      ; TyApply(ppid,Nat)             , R(Step(pid))
+      ; fiveo                         , R(Val(VPack(Nat,VPair(VNat(VZero),VLambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X"))))))
+      ; unp                           , R(Step(Pack(Nat,Apply(Projr(Pair(Zero,Lambda("x",Nat,Var("x")))),Projl(Pair(Zero,Lambda("x",Nat,Var("x"))))),"Z",TVar("Z"))))
+      ]
+    , step_test_result
+    , (=)
+    , [%show : exp]
+    , [%show : result test_result]
+    )
 
 let infer_tests =
-  let m : exp = Lambda("x",Nat,Zero) in
-  let n : exp = Apply(m,Error) in
-  let e : exp = Error in
-  print_endline "**";
-  print_endline (show_ty (infer [] m));
-  print_endline (show_exp (step_star m));
-  print_endline (show_result (step n));
-  print_endline (show_exp (step_star n));
-  print_endline (show_result (step e))
+  (* pid = ΛX.λ(x:X).x
+   * pid : ∀X.X→X
+  *)
+  let pid : exp = BigLambda("X",Lambda("x",TVar("X"),Var("x"))) in
+  let pidt : ty = Forall("X",Fun(TVar("X"),TVar("X"))) in
+  (* pidid = λ(x:∀X.X→X).x
+   * pidid = (∀X.X→X) → (∀X.X→X)
+  *)
+  let pidid : exp = Lambda("x",pidt,Var("x")) in
+  let pididt : ty = Fun(pidt,pidt) in
+  (* ppid = ΛX.ΛX.λ(x:X).x
+   * ppid = ∀X.∀X.X→X
+  *)
+  let ppid : exp = BigLambda("X",pid) in
+  let ppidt : ty = Forall("X",pidt) in
+  (* fiveo = ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→X)
+   * fiveo : ∃X.X×(X→X)
+  *)
+  let fiveo : exp = Pack(Nat,Pair(Zero,Lambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X")))) in
+  let fiveot = Exists("X",Prod(TVar("X"),Fun(TVar("X"),TVar("X")))) in
+  (* fiveo′ = ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→nat)
+   * fiveo′ : ∃X.X×(X→X)
+  *)
+  let fiveo' : exp = Pack(Nat,Pair(Zero,Lambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),Nat))) in
+  let fiveo't = Exists("X",Prod(TVar("X"),Fun(TVar("X"),Nat))) in
+  (* fiveobad = ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→bool)
+  *)
+  let fiveobad : exp = Pack(Nat,Pair(Zero,Lambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),Bool))) in
+  (* unp = let ⟨*Y,y⟩ ≔ ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→X) in ⟨*Y,projr(y)(projl(y))⟩ as ∃Z.Z
+   * unp : ∃Z.Z
+  *)
+  let unp : exp = Unpack("Y","y",fiveo,Pack(TVar("Y"),Apply(Projr(Var("y")),Projl(Var("y"))),"Z",TVar("Z"))) in
+  let unpt : ty = Exists("Z",TVar("Z")) in
+  (* unp' = let ⟨*Y,y⟩ ≔ ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→X) in ⟨*Y,pid[Y](projr(y)(projl(y)))⟩ as ∃Z.Z
+   * unp' : ∃Z.Z
+  *)
+  let unp' : exp = Unpack("Y","y",fiveo,Pack(TVar("Y"),Apply(TyApply(pid,TVar("Y")),Apply(Projr(Var("y")),Projl(Var("y")))),"Z",TVar("Z"))) in
+  let unp't : ty = Exists("Z",TVar("Z")) in
+  (* bunp = let ⟨*Y,y⟩ ≔ ⟨*nat,⟨0,(λ(x:nat).x)⟩⟩ as ∃X.X×(X→X) in projr(y)(projl(y)) *)
+  let bunp : exp = Unpack("Y","y",fiveo,Apply(Projr(Var("y")),Projl(Var("y")))) in
+  (* pidpair = ΛX.ΛY.⟨(λ(x:X).x),(λ(x:Y).x)⟩
+   * pidpair : ∀X.∀Y.(X→X)×(Y→Y)
+  *)
 
+  let _pidpair : exp = BigLambda("X",BigLambda("Y",Pair(TyApply(pid,TVar("X")),TyApply(pid,TVar("Y"))))) in
+  let _pidpairt : ty = Forall("X",Forall("Y",Prod(Fun(TVar("X"),TVar("X")),Fun(TVar("Y"),TVar("Y"))))) in
+  (* weird1 = (ΛY.pidpair)[nat]
+   * weird1 : [Y↦nat](∀X.∀Y.(X→X)×(Y→Y)
+   * weird1 : pidpairt
+  *)
+  let _weird1 : exp = TyApply(BigLambda("Y",_pidpair),Nat) in
+  (* weird2 = ∀Y.pidpair[Y]
+   * weird2 : ∀Y.[X↦Y](∀Y.(X→X)×(Y→Y))
+   * weird2 : ∀Y.∀Y′.(Y→Y)×(Y′→Y′)
+  *)
+  let _weird2 : exp = BigLambda("Y",TyApply(_pidpair,TVar("Y"))) in
+  let _weird2t : ty = Forall("Y",Forall("Y'",Prod(Fun(TVar("Y"),TVar("Y")),Fun(TVar("Y'"),TVar("Y'"))))) in
+  (* weird3 = ΛY′.ΛY.(ΛX.ΛY.⟨⟨(λ(x:Y′).x),(λ(x:X).x)⟩,(λ(x:Y).x)⟩)[Y]
+   * weird3 : ∀Y′.∀Y.[X↦Y](∀Y.(Y′→Y′)×(X→X)×(Y→Y))
+   * weird3 : ∀Y′.∀Y.∀Y″.(Y′→Y′)×(Y→Y)×(Y″→Y″)
+  *)
+  let _weird3 : exp = BigLambda("Y'",BigLambda("Y"
+                                              ,TyApply
+                                                  (BigLambda("X",BigLambda("Y"
+                                                                          ,Pair(Pair(TyApply(pid,TVar("Y'")),TyApply(pid,TVar("X"))),TyApply(pid,TVar("Y")))))
+                                                  ,TVar("Y")))) in
+  let _weird3t : ty = Forall("Y'",Forall("Y",Forall("Y''"
+                                                   ,Prod(Prod(Fun(TVar("Y'"),TVar("Y'")),Fun(TVar("Y"),TVar("Y"))),Fun(TVar("Y''"),TVar("Y''")))))) in
+  TestBlock
+    ( "INFER"
+    , [ Let("x",Zero,Var("x"))                , R(Nat)
+      ; Lambda("x",Nat,Var("x"))              , R(Fun(Nat,Nat))
+      ; Lambda("x",TVar("X"),Var("x"))        , TypeError
+      ; Apply(Lambda("x",Nat,Var("x")),Zero)  , R(Nat)
+      ; Apply(Lambda("x",Nat,Var("x")),True)  , TypeError
+      ; pid                                   , R(pidt)
+      ; TyApply(pid,Nat)                      , R(Fun(Nat,Nat))
+      ; TyApply(pid,Bool)                     , R(Fun(Bool,Bool))
+      ; TyApply(pid,TVar("Y"))                , TypeError
+      ; pidid                                 , R(pididt)
+      ; TyApply(Apply(pidid,pid),Nat)         , R(Fun(Nat,Nat))
+      ; ppid                                  , R(ppidt)
+      ; TyApply(ppid,Nat)                     , R(pidt)
+      ; fiveo                                 , R(fiveot)
+      ; fiveo'                                , R(fiveo't)
+      ; fiveobad                              , TypeError
+      ; unp                                   , R(unpt)
+      ; unp'                                  , R(unp't)
+      ; bunp                                  , TypeError
+        (* SANITY CHECKS FOR HELPER CODE *)
+        (*
+        ; _pidpair                               , R(_pidpairt)
+        ; _weird1                                , R(_pidpairt)
+        ; _weird2                                , R(_weird2t)
+        ; _weird3                                , R(_weird3t)
+        *)
+      ]
+    , infer_test_result
+    , (=)
+    , [%show : exp]
+    , [%show : ty test_result]
+    )
 
+let _ =
+  _SHOW_PASSED_TESTS := false ;
+  run_tests [step_tests;infer_tests]
 
 (* Name: <Lindsey Stuntz> *)
