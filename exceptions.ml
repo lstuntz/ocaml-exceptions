@@ -236,7 +236,7 @@ let rec efree_vars (e0 : exp) : string_set = match e0 with
       (efree_vars e1)
       (StringSet.remove x (efree_vars e2))
   | Error -> StringSet.empty
-  | TryWith(e1, e2) -> raise TODO
+  | TryWith(e1, e2) -> StringSet.union (efree_vars e1) (efree_vars e2)
 
 (***********************************************
  * Substitution for expressions in expressions *
@@ -341,8 +341,8 @@ let esubst_e (x : var) (e' : exp) (e : exp) : exp =
         if xt = yt
         then Unpack(xt,x,esubst_t_i xt t' e1,e2)
         else Unpack(xt,x,esubst_t_i xt t' e1,esubst_t_i xt t' e2)
-    | Error -> raise TODO
-    | TryWith(e1,e2) -> raise TODO
+    | Error -> Error
+    | TryWith(e1,e2) -> TryWith(esubst_t_i xt t' e1, esubst_t_i xt t' e2)
 
   (* A version of non-capture-avoiding substitution that raises an exception if
    * its required assumptions are not satisfied.
