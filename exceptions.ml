@@ -50,7 +50,7 @@ type var = string
  *         | projl(e) | projr(e)
  *         | let x ≔ e in e | ΛX.e | e[τ]
  *         | ⟨*τ,e⟩ as ∃X.τ | let ⟨*X,x⟩ = e in e
- *         | error | try e with e
+ *         | raise t | try e with e
  *)
 type exp =
   | True
@@ -71,7 +71,7 @@ type exp =
   | TyApply of exp * ty
   | Pack of ty * exp * tvar * ty
   | Unpack of tvar * var * exp * exp
-  | Error
+  | Raise of exp
   | TryWith of exp * exp
 [@@deriving show {with_path = false}]
 
@@ -235,7 +235,7 @@ let rec efree_vars (e0 : exp) : string_set = match e0 with
     StringSet.union
       (efree_vars e1)
       (StringSet.remove x (efree_vars e2))
-  | Error -> StringSet.empty
+  | Raise(e) -> efree_vars e
   | TryWith(e1, e2) -> StringSet.union (efree_vars e1) (efree_vars e2)
 
 (***********************************************
@@ -281,7 +281,7 @@ let rec esubst_e_i (x : var) (e' : exp) (e0 : exp) : exp = match e0 with
     if x = y
     then Unpack(xt,x,esubst_e_i x e' e1,e2)
     else Unpack(xt,y,esubst_e_i x e' e1,esubst_e_i x e' e2)
-  | Error -> Error
+  | Raise(e) -> Raise(esubst_e_i x e' e)
   | TryWith(e1,e2) -> TryWith(esubst_e_i x e' e1, esubst_e_i x e' e2)
 
 exception NOT_CLOSED_ERROR
@@ -341,7 +341,7 @@ let esubst_e (x : var) (e' : exp) (e : exp) : exp =
         if xt = yt
         then Unpack(xt,x,esubst_t_i xt t' e1,e2)
         else Unpack(xt,x,esubst_t_i xt t' e1,esubst_t_i xt t' e2)
-    | Error -> Error
+    | Raise(e) -> Raise(esubst_t_i xt t' e)
     | TryWith(e1,e2) -> TryWith(esubst_t_i xt t' e1, esubst_t_i xt t' e2)
 
   (* A version of non-capture-avoiding substitution that raises an exception if
@@ -703,7 +703,7 @@ let rec step (e0 : exp) : result = match e0 with
       | Stuck -> Stuck
       | Err -> Err
     end
-  | Error -> Err
+  | Raise(e) -> Err
   | TryWith(e1,e2) -> begin match step e1 with
       (* [E-TryV]
        * try v₁ with t₂ —→ v₁ *)
@@ -729,7 +729,7 @@ let rec step_star (e : exp) : exp = match step e with
   | Val(v) -> exp_of_val v
   | Step(e') -> step_star e'
   | Stuck -> e
-  | Err -> Error
+  | Err -> Raise(e)
 
   (**********************
    * Well-scoped relation
@@ -975,7 +975,7 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
           t2
       | _ -> raise TYPE_ERROR
     end
-  | Error -> raise TODO
+  | Raise(e) -> raise TODO
   (* Γ ⊢ t₁ : τ   Γ ⊢ t₂ : τ
    * ———————————————————————
    * Γ ⊢ try t₁ with t₂ : τ
