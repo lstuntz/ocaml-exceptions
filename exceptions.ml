@@ -23,7 +23,7 @@ open StringSetMap
 type tvar = string
 [@@deriving show {with_path = false}]
 
-(* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ
+(* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ | error
  *)
 type ty =
   | Bool
@@ -33,6 +33,7 @@ type ty =
   | TVar of tvar
   | Forall of tvar * ty
   | Exists of tvar * ty
+  | Error
 [@@deriving show {with_path = false}]
 
 (**************************
@@ -132,6 +133,7 @@ let rec tfree_vars (t0 : ty) : string_set = match t0 with
   | TVar(xt) -> StringSet.of_list [xt]
   | Forall(xt,t) -> StringSet.remove xt (tfree_vars t)
   | Exists(xt,t) -> StringSet.remove xt (tfree_vars t)
+  | Error -> StringSet.empty
 
 (**************************
  * Substitution for types *
@@ -151,6 +153,7 @@ let rec trename (xt : tvar) (xt' : tvar) (t0 : ty) : ty = match t0 with
   | TVar(yt) -> if xt = yt then TVar(xt') else TVar(yt)
   | Forall(yt,t) -> if xt = yt then Forall(yt,t) else Forall(yt,trename xt xt' t)
   | Exists(yt,t) -> if xt = yt then Exists(yt,t) else Forall(yt,trename xt xt' t)
+  | Error -> Error
 
 (* An auxiliary function:
  *
@@ -200,6 +203,7 @@ let rec tsubst (xt : tvar) (t' : ty) (t0 : ty) = match t0 with
     if xt = yt then Exists(xt,t) else
       let (yt'',t'') = tfresh yt t' t in
       Exists(yt'',tsubst xt t' t'')
+  | Error -> Error
 
 (**********************************
  * Free variables for expressions *
@@ -378,12 +382,13 @@ let rec exp_of_val (v0 : value) : exp = match v0 with
 
 (* A result is either a value, an expression, or the symbol `stuck`.
  *
- * r ∈ result ⩴ v | e | stuck
+ * r ∈ result ⩴ v | e | stuck | raise e | error
 *)
 type result =
   | Val of value
   | Step of exp
   | Stuck
+  | Rais of exp
   | Err
 [@@deriving show {with_path = false}]
 
@@ -430,6 +435,7 @@ let rec step (e0 : exp) : result = match e0 with
        * if(e₁){e₂}{e₃} —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   (* zero ∈ val *)
   | Zero -> Val(VNat(VZero))
@@ -454,6 +460,7 @@ let rec step (e0 : exp) : result = match e0 with
        * succ(e) —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   | Pred(e) -> begin match step e with
       (* [Pred-Zero]
@@ -479,6 +486,7 @@ let rec step (e0 : exp) : result = match e0 with
        * pred(e) —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   | IsZero(e) -> begin match step e with
       (* [IsZero-Zero]
@@ -504,6 +512,7 @@ let rec step (e0 : exp) : result = match e0 with
        * iszero(e) —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   | Pair(e1,e2) -> begin match step e1 with
       | Val(v1) -> begin match step e2 with
@@ -521,7 +530,8 @@ let rec step (e0 : exp) : result = match e0 with
            * ⟨v,e⟩ —↛ *)
           | Stuck -> Stuck
           | Err -> Err
-          end
+          | Rais(_) -> Err
+        end
       (* [Pair-Cong-1]
        * e₁ —→ e₁′
        * ⟹
@@ -534,6 +544,7 @@ let rec step (e0 : exp) : result = match e0 with
        * ⟨e₁,e₂⟩ —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
       end
   | Projl(e1) -> begin match step e1 with
       (* [Projl-Pair]
@@ -556,6 +567,7 @@ let rec step (e0 : exp) : result = match e0 with
        * projl(e) —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
       end
   | Projr(e1) -> begin match step e1 with
       (* [Projr-Pair]
@@ -578,6 +590,7 @@ let rec step (e0 : exp) : result = match e0 with
        * projr(e) —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
       end
   (* x is not closed *)
   | Var(x) -> raise NOT_CLOSED_ERROR
@@ -609,6 +622,9 @@ let rec step (e0 : exp) : result = match e0 with
           (* [E-AppErr2]
            * v₁(error) —→ error *)
           | Err -> Err
+          (* [E-AppRaise2]
+           * v₁(raise v₂₁) —→ raise v₂₁ *)
+          | Rais(e2') -> Rais(e2')
           end
       (* [Apply-Cong-1]
        * e₁ —→ e₁′
@@ -624,6 +640,9 @@ let rec step (e0 : exp) : result = match e0 with
       (* [E-AppErr1]
        * error(t₂) —→ error *)
       | Err -> Err
+      (* [E-AppRaise1]
+       * (raise v₁₁)t₂ —→ raise v₁₁ *)
+      | Rais(e1') -> Rais(e1')
     end
   | Let(x,e1,e2) -> begin match step e1 with
       (* [Let-Val]
@@ -641,6 +660,7 @@ let rec step (e0 : exp) : result = match e0 with
        * let x ≔ e₁ in e₂ —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   (* ΛX.e ∈ val *)
   | BigLambda(xt,e) -> Val(VBigLambda(xt,e))
@@ -665,6 +685,7 @@ let rec step (e0 : exp) : result = match e0 with
        * e[τ] —↛ val *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   | Pack(t1,e,xt,t2) -> begin match step e with
       (* ⟨*τ,v⟩ as ∃X.τ ∈ val *)
@@ -681,6 +702,7 @@ let rec step (e0 : exp) : result = match e0 with
        * ⟨*τ,e⟩ as ∃X.τ —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
   | Unpack(xt,x,e1,e2) -> begin match step e1 with
       (* [Unpack-Pack]
@@ -702,8 +724,21 @@ let rec step (e0 : exp) : result = match e0 with
        * let ⟨*X,x⟩ ≔ e₁ in e₂ —↛ *)
       | Stuck -> Stuck
       | Err -> Err
+      | Rais(_) -> Err
     end
-  | Raise(e) -> Err
+  | Raise(e) -> begin match step e with
+      | Val(_) -> Err
+      (* [E-Raise]
+       * t₁ —→ t₁′
+       * ⟹
+       * raise t₁ —→ raise t₁′ *)
+      | Step(e') -> Rais(e')
+      | Stuck -> Stuck
+      | Err -> Err
+      (* [E-RaiseRaise]
+       * raise (raise v₁₁) —→ raise v₁₁ *)
+      | Rais(e') -> Rais(e')
+    end
   | TryWith(e1,e2) -> begin match step e1 with
       (* [E-TryV]
        * try v₁ with t₂ —→ v₁ *)
@@ -722,6 +757,9 @@ let rec step (e0 : exp) : result = match e0 with
       (* [E-TryError]
        * try error with t₂ —→ t₂ *)
       | Err -> Step(e2)
+      (* [E-TryRaise]
+       * try raise v₁₁ with t₂ —→ t₂ v₁₁ *)
+      | Rais(e') -> Step(Apply(e2, e'))
       end
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
@@ -730,6 +768,7 @@ let rec step_star (e : exp) : exp = match step e with
   | Step(e') -> step_star e'
   | Stuck -> e
   | Err -> Raise(e)
+  | Rais(e) -> Raise(e)
 
   (**********************
    * Well-scoped relation
@@ -780,6 +819,7 @@ let rec step_star (e : exp) : exp = match step e with
      * S ⊢ ∃X.τ *)
     | Exists(xt,t) ->
       if scope_ok (StringSet.union s (StringSet.of_list [xt])) t then true else false
+    | Error -> true
 
 (***********************
  * Well-typed relation *
@@ -803,6 +843,13 @@ let rec step_star (e : exp) : exp = match step e with
    | Forall(xt,t1) , Forall(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
    | Forall(_) , _ -> false | _ , Forall(_) -> false
    | Exists(xt,t1) , Exists(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
+   | Error, Error -> true
+   | Error, Bool -> raise TODO
+   | Error, Nat -> raise TODO
+   | Error, Fun(t11, t12) -> raise TODO
+   | Error, Prod(t11, t12) -> raise TODO
+   | Error, TVar(x) -> raise TODO
+   | Error, Exists(xt, t1) -> raise TODO
    | _ , _ -> false
 
    (* tequal τ₁ τ₂ = true ⟺  τ₁ ≈ᵅ τ₂
@@ -975,10 +1022,11 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
           t2
       | _ -> raise TYPE_ERROR
     end
-  | Raise(e) -> raise TODO
-  (* Γ ⊢ t₁ : τ   Γ ⊢ t₂ : τ
+  | Raise(e) -> Error
+  (* [T-Try]
+   * S,Γ ⊢ t₁ : τ   S,Γ ⊢ t₂ : τ
    * ———————————————————————
-   * Γ ⊢ try t₁ with t₂ : τ
+   * S,Γ ⊢ try t₁ with t₂ : τ
   *)
   | TryWith(e1,e2) ->
     let t1 = infer s g e1 in
