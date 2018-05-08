@@ -23,7 +23,7 @@ open StringSetMap
 type tvar = string
 [@@deriving show {with_path = false}]
 
-(* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ | error
+(* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ | error | Txn
  *)
 type ty =
   | Bool
@@ -34,6 +34,7 @@ type ty =
   | Forall of tvar * ty
   | Exists of tvar * ty
   | Error
+  | Txn
 [@@deriving show {with_path = false}]
 
 (**************************
@@ -843,13 +844,6 @@ let rec step_star (e : exp) : exp = match step e with
    | Forall(xt,t1) , Forall(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
    | Forall(_) , _ -> false | _ , Forall(_) -> false
    | Exists(xt,t1) , Exists(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
-   | Error, Error -> true
-   | Error, Bool -> raise TODO
-   | Error, Nat -> raise TODO
-   | Error, Fun(t11, t12) -> raise TODO
-   | Error, Prod(t11, t12) -> raise TODO
-   | Error, TVar(x) -> raise TODO
-   | Error, Exists(xt, t1) -> raise TODO
    | _ , _ -> false
 
    (* tequal τ₁ τ₂ = true ⟺  τ₁ ≈ᵅ τ₂
@@ -1022,7 +1016,14 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
           t2
       | _ -> raise TYPE_ERROR
     end
-  | Raise(e) -> Error
+  (* [T-Exn]
+   * S,Γ ⊢ t₁ : τexn
+   * ———————————————————————
+   * S,Γ ⊢ raise t₁ : τ
+  *)
+  | Raise(e) ->
+    let t = infer s g e in
+    if not (tequal t Txn) then raise TYPE_ERROR else Error
   (* [T-Try]
    * S,Γ ⊢ t₁ : τ   S,Γ ⊢ t₂ : τ
    * ———————————————————————
@@ -1031,8 +1032,14 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
   | TryWith(e1,e2) ->
     let t1 = infer s g e1 in
     let t2 = infer s g e2 in
-    if not (t1 = t2) then raise TYPE_ERROR else
-    t1
+    begin match t2 with
+      | Fun(t1',t2') -> if not (tequal t1 t2') then raise TYPE_ERROR else
+          begin match t2' with
+            | Txn -> t1
+            | _ -> raise TYPE_ERROR
+          end
+      | _ -> raise TYPE_ERROR
+    end
 
 (***********
  * Testing *
