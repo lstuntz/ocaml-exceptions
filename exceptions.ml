@@ -23,6 +23,11 @@ open StringSetMap
 type tvar = string
 [@@deriving show {with_path = false}]
 
+(* X ∈ tvar ≈ 𝕊
+*)
+type msg = string
+[@@deriving show {with_path = false}]
+
 (* τ ∈ ty ⩴ bool | nat | τ → τ | τ × τ | X | ∀X.τ | ∃X.τ | error | Txn
  *)
 type ty =
@@ -52,7 +57,7 @@ type var = string
  *         | projl(e) | projr(e)
  *         | let x ≔ e in e | ΛX.e | e[τ]
  *         | ⟨*τ,e⟩ as ∃X.τ | let ⟨*X,x⟩ = e in e
- *         | raise t | try e with e
+ *         | raise t | try e with e | message
  *)
 type exp =
   | True
@@ -75,6 +80,7 @@ type exp =
   | Unpack of tvar * var * exp * exp
   | Raise of exp
   | TryWith of exp * exp
+  | Mess of msg
 [@@deriving show {with_path = false}]
 
 (*********************
@@ -135,6 +141,7 @@ let rec tfree_vars (t0 : ty) : string_set = match t0 with
   | Forall(xt,t) -> StringSet.remove xt (tfree_vars t)
   | Exists(xt,t) -> StringSet.remove xt (tfree_vars t)
   | Error -> StringSet.empty
+  | Txn -> StringSet.empty
 
 (**************************
  * Substitution for types *
@@ -155,6 +162,7 @@ let rec trename (xt : tvar) (xt' : tvar) (t0 : ty) : ty = match t0 with
   | Forall(yt,t) -> if xt = yt then Forall(yt,t) else Forall(yt,trename xt xt' t)
   | Exists(yt,t) -> if xt = yt then Exists(yt,t) else Forall(yt,trename xt xt' t)
   | Error -> Error
+  | Txn -> Txn
 
 (* An auxiliary function:
  *
@@ -205,6 +213,7 @@ let rec tsubst (xt : tvar) (t' : ty) (t0 : ty) = match t0 with
       let (yt'',t'') = tfresh yt t' t in
       Exists(yt'',tsubst xt t' t'')
   | Error -> Error
+  | Txn -> Txn
 
 (**********************************
  * Free variables for expressions *
@@ -242,6 +251,7 @@ let rec efree_vars (e0 : exp) : string_set = match e0 with
       (StringSet.remove x (efree_vars e2))
   | Raise(e) -> efree_vars e
   | TryWith(e1, e2) -> StringSet.union (efree_vars e1) (efree_vars e2)
+  | Mess(m) -> StringSet.empty
 
 (***********************************************
  * Substitution for expressions in expressions *
@@ -288,6 +298,7 @@ let rec esubst_e_i (x : var) (e' : exp) (e0 : exp) : exp = match e0 with
     else Unpack(xt,y,esubst_e_i x e' e1,esubst_e_i x e' e2)
   | Raise(e) -> Raise(esubst_e_i x e' e)
   | TryWith(e1,e2) -> TryWith(esubst_e_i x e' e1, esubst_e_i x e' e2)
+  | Mess(m) -> Mess(m)
 
 exception NOT_CLOSED_ERROR
 
@@ -348,6 +359,7 @@ let esubst_e (x : var) (e' : exp) (e : exp) : exp =
         else Unpack(xt,x,esubst_t_i xt t' e1,esubst_t_i xt t' e2)
     | Raise(e) -> Raise(esubst_t_i xt t' e)
     | TryWith(e1,e2) -> TryWith(esubst_t_i xt t' e1, esubst_t_i xt t' e2)
+    | Mess(m) -> Mess(m)
 
   (* A version of non-capture-avoiding substitution that raises an exception if
    * its required assumptions are not satisfied.
@@ -728,7 +740,7 @@ let rec step (e0 : exp) : result = match e0 with
       | Rais(_) -> Err
     end
   | Raise(e) -> begin match step e with
-      | Val(_) -> Err
+      | Val(_) -> Rais(e)
       (* [E-Raise]
        * t₁ —→ t₁′
        * ⟹
@@ -743,7 +755,7 @@ let rec step (e0 : exp) : result = match e0 with
   | TryWith(e1,e2) -> begin match step e1 with
       (* [E-TryV]
        * try v₁ with t₂ —→ v₁ *)
-      | Val(v) -> Step(exp_of_val v)
+      | Val(v) -> Val(v)
       (* [E-Try]
        * t₁ —→ t₁′
        * ⟹
@@ -761,7 +773,8 @@ let rec step (e0 : exp) : result = match e0 with
       (* [E-TryRaise]
        * try raise v₁₁ with t₂ —→ t₂ v₁₁ *)
       | Rais(e') -> Step(Apply(e2, e'))
-      end
+    end
+  | Mess(m) -> Err
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
 let rec step_star (e : exp) : exp = match step e with
@@ -821,6 +834,7 @@ let rec step_star (e : exp) : exp = match step e with
     | Exists(xt,t) ->
       if scope_ok (StringSet.union s (StringSet.of_list [xt])) t then true else false
     | Error -> true
+    | Txn -> true
 
 (***********************
  * Well-typed relation *
@@ -844,6 +858,8 @@ let rec step_star (e : exp) : exp = match step e with
    | Forall(xt,t1) , Forall(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
    | Forall(_) , _ -> false | _ , Forall(_) -> false
    | Exists(xt,t1) , Exists(yt,t2) -> tequal_r (l+1) (StringMap.add xt l t1e) (StringMap.add yt l t2e) t1 t2
+   | Error, _ -> true
+   | _, Error -> true
    | _ , _ -> false
 
    (* tequal τ₁ τ₂ = true ⟺  τ₁ ≈ᵅ τ₂
@@ -878,8 +894,8 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
     let t1 = infer s g e1 in
     let t2 = infer s g e2 in
     let t3 = infer s g e3 in
-    if not (t1 = Bool) then raise TYPE_ERROR else
-    if not (t2 = t3) then raise TYPE_ERROR else
+    if not (tequal t1 Bool) then raise TYPE_ERROR else
+    if not (tequal t2 t3) then raise TYPE_ERROR else
       t2
   (* [Zero]
    * S , Γ ⊢ zero : nat *)
@@ -890,7 +906,7 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
    * S , Γ ⊢ succ(e) : nat *)
   | Succ(e) ->
     let t = infer s g e in
-    if not (t = Nat) then raise TYPE_ERROR else
+    if not (tequal t Nat) then raise TYPE_ERROR else
       Nat
   (* [Pred]
    * S , Γ ⊢ e : nat
@@ -898,7 +914,7 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
    * S , Γ ⊢ pred(e) : nat *)
   | Pred(e) ->
     let t = infer s g e in
-    if not (t = Nat) then raise TYPE_ERROR else
+    if not (tequal t Nat) then raise TYPE_ERROR else
       Nat
   (* [IsZero]
    * S , Γ ⊢ e : nat
@@ -906,7 +922,7 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
    * S , Γ ⊢ iszero(e) : bool *)
   | IsZero(e) ->
     let t = infer s g e in
-    if not (t = Nat) then raise TYPE_ERROR else
+    if not (tequal t Nat) then raise TYPE_ERROR else
       Bool
   (* [Pair]
    * S , Γ ⊢ e₁ : τ₁
@@ -1023,9 +1039,12 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
   *)
   | Raise(e) ->
     let t = infer s g e in
-    if not (tequal t Txn) then raise TYPE_ERROR else Error
+    begin match t with
+      | Txn -> Error
+      | _ -> raise TYPE_ERROR
+    end
   (* [T-Try]
-   * S,Γ ⊢ t₁ : τ   S,Γ ⊢ t₂ : τ
+   * S,Γ ⊢ t₁ : τ   S,Γ ⊢ t₂ : τexn -> τ
    * ———————————————————————
    * S,Γ ⊢ try t₁ with t₂ : τ
   *)
@@ -1034,12 +1053,13 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
     let t2 = infer s g e2 in
     begin match t2 with
       | Fun(t1',t2') -> if not (tequal t1 t2') then raise TYPE_ERROR else
-          begin match t2' with
+          begin match t1' with
             | Txn -> t1
             | _ -> raise TYPE_ERROR
           end
       | _ -> raise TYPE_ERROR
     end
+  | Mess(m) -> Txn
 
 (***********
  * Testing *
@@ -1081,6 +1101,9 @@ let step_tests : test_block =
       ; TyApply(ppid,Nat)             , R(Step(pid))
       ; fiveo                         , R(Val(VPack(Nat,VPair(VNat(VZero),VLambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X"))))))
       ; unp                           , R(Step(Pack(Nat,Apply(Projr(Pair(Zero,Lambda("x",Nat,Var("x")))),Projl(Pair(Zero,Lambda("x",Nat,Var("x"))))),"Z",TVar("Z"))))
+      ; Apply(Raise(Raise(If(True,False,Zero))),True)       , R(Rais(False))
+      ; TryWith(Zero, False)                                , R(Val(VNat(VZero)))
+      ; TryWith(Raise(False),Lambda("x", Bool, Var("x")))      , R((Step (Apply ((Lambda ("x", Bool, (Var "x"))), False))))
       ]
     , step_test_result
     , (=)
@@ -1195,5 +1218,27 @@ let infer_tests =
 let _ =
   _SHOW_PASSED_TESTS := false ;
   run_tests [step_tests;infer_tests]
+
+let step_tests2 =
+  let m : exp = TryWith(Raise(False),Lambda("x", Bool, Var("x"))) in
+  print_endline "**";
+  print_endline (show_exp (step_star m));
+  print_endline (show_result (step m))
+
+let infer_tests2 =
+  let m : exp = TryWith(Raise(False),Lambda("x", Txn, Var("x"))) in
+  let n : exp = Mess("hello") in
+  let o : exp = TryWith(False, Lambda("x", Txn, True)) in
+  let p1 : exp = Raise(Mess("errrrrr")) in
+  let p2 : exp = Lambda("x", Txn, False) in
+  let p : exp = TryWith(p1, p2) in
+  print_endline "**";
+  print_endline (show_exp (step_star m));
+  print_endline (show_exp (step_star n));
+  print_endline (show_exp (step_star o));
+  print_endline (show_exp (step_star p));
+  print_endline (show_ty (infer StringSet.empty StringMap.empty p1));
+  print_endline (show_ty (infer StringSet.empty StringMap.empty p2));
+  print_endline (show_ty (infer StringSet.empty StringMap.empty p))
 
 (* Name: <Lindsey Stuntz> *)
