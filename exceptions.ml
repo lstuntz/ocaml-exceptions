@@ -402,7 +402,7 @@ type result =
   | Step of exp
   | Stuck
   | Rais of exp
-  | Err
+  | RErr
 [@@deriving show {with_path = false}]
 
 (* The small-step relation e —→ e
@@ -447,8 +447,8 @@ let rec step (e0 : exp) : result = match e0 with
        * if(e₁){e₂}{e₃} ∉ val
        * if(e₁){e₂}{e₃} —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   (* zero ∈ val *)
   | Zero -> Val(VNat(VZero))
@@ -472,8 +472,8 @@ let rec step (e0 : exp) : result = match e0 with
        * succ(e) ∉ val
        * succ(e) —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | Pred(e) -> begin match step e with
       (* [Pred-Zero]
@@ -498,8 +498,8 @@ let rec step (e0 : exp) : result = match e0 with
        * pred(e) ∉ val
        * pred(e) —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | IsZero(e) -> begin match step e with
       (* [IsZero-Zero]
@@ -524,8 +524,8 @@ let rec step (e0 : exp) : result = match e0 with
        * iszero(e) ∉ val
        * iszero(e) —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | Pair(e1,e2) -> begin match step e1 with
       | Val(v1) -> begin match step e2 with
@@ -542,8 +542,8 @@ let rec step (e0 : exp) : result = match e0 with
            * ⟨v,e⟩ ∉ val
            * ⟨v,e⟩ —↛ *)
           | Stuck -> Stuck
-          | Err -> Err
-          | Rais(_) -> Err
+          | RErr -> RErr
+          | Rais(_) -> RErr
         end
       (* [Pair-Cong-1]
        * e₁ —→ e₁′
@@ -556,8 +556,8 @@ let rec step (e0 : exp) : result = match e0 with
        * ⟨e₁,e₂⟩ ∉ val
        * ⟨e₁,e₂⟩ —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
       end
   | Projl(e1) -> begin match step e1 with
       (* [Projl-Pair]
@@ -579,8 +579,8 @@ let rec step (e0 : exp) : result = match e0 with
        * projl(e) ∉ val
        * projl(e) —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
       end
   | Projr(e1) -> begin match step e1 with
       (* [Projr-Pair]
@@ -602,8 +602,8 @@ let rec step (e0 : exp) : result = match e0 with
        * projr(e) ∉ val
        * projr(e) —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
       end
   (* x is not closed *)
   | Var(x) -> raise NOT_CLOSED_ERROR
@@ -634,7 +634,7 @@ let rec step (e0 : exp) : result = match e0 with
           | Stuck -> Stuck
           (* [E-AppErr2]
            * v₁(error) —→ error *)
-          | Err -> Err
+          | RErr -> RErr
           (* [E-AppRaise2]
            * v₁(raise v₂₁) —→ raise v₂₁ *)
           | Rais(e2') -> Rais(e2')
@@ -652,7 +652,7 @@ let rec step (e0 : exp) : result = match e0 with
       | Stuck -> Stuck
       (* [E-AppErr1]
        * error(t₂) —→ error *)
-      | Err -> Err
+      | RErr -> RErr
       (* [E-AppRaise1]
        * (raise v₁₁)t₂ —→ raise v₁₁ *)
       | Rais(e1') -> Rais(e1')
@@ -672,8 +672,8 @@ let rec step (e0 : exp) : result = match e0 with
        * let x ≔ e₁ in e₂ ∉ val
        * let x ≔ e₁ in e₂ —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   (* ΛX.e ∈ val *)
   | BigLambda(xt,e) -> Val(VBigLambda(xt,e))
@@ -697,8 +697,8 @@ let rec step (e0 : exp) : result = match e0 with
        * e[τ] ∉ val
        * e[τ] —↛ val *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | Pack(t1,e,xt,t2) -> begin match step e with
       (* ⟨*τ,v⟩ as ∃X.τ ∈ val *)
@@ -714,8 +714,8 @@ let rec step (e0 : exp) : result = match e0 with
        * ⟨*τ,e⟩ as ∃X.τ ∉ val
        * ⟨*τ,e⟩ as ∃X.τ —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | Unpack(xt,x,e1,e2) -> begin match step e1 with
       (* [Unpack-Pack]
@@ -736,8 +736,8 @@ let rec step (e0 : exp) : result = match e0 with
        * let ⟨*X,x⟩ ≔ e₁ in e₂ ∉ val
        * let ⟨*X,x⟩ ≔ e₁ in e₂ —↛ *)
       | Stuck -> Stuck
-      | Err -> Err
-      | Rais(_) -> Err
+      | RErr -> RErr
+      | Rais(_) -> RErr
     end
   | Raise(e) -> begin match step e with
       | Val(_) -> Rais(e)
@@ -747,7 +747,7 @@ let rec step (e0 : exp) : result = match e0 with
        * raise t₁ —→ raise t₁′ *)
       | Step(e') -> Rais(e')
       | Stuck -> Stuck
-      | Err -> Err
+      | RErr -> RErr
       (* [E-RaiseRaise]
        * raise (raise v₁₁) —→ raise v₁₁ *)
       | Rais(e') -> Rais(e')
@@ -769,24 +769,28 @@ let rec step (e0 : exp) : result = match e0 with
       | Stuck -> Stuck
       (* [E-TryError]
        * try error with t₂ —→ t₂ *)
-      | Err -> Step(e2)
+      | RErr -> Step(e2)
       (* [E-TryRaise]
        * try raise v₁₁ with t₂ —→ t₂ v₁₁ *)
       | Rais(e') -> Step(Apply(e2, e'))
     end
-  | Mess(m) -> Err
+  | Mess(m) -> Rais(Mess(m))
 
 (* The reflexive transitive closure of the small-step relation e —→* e *)
 let rec step_star (e : exp) : exp = match step e with
   | Val(v) -> exp_of_val v
   | Step(e') -> step_star e'
   | Stuck -> e
-  | Err -> Raise(e)
-  | Rais(e) -> Raise(e)
+  | RErr -> Mess("Error - Program Abort")
+  | Rais(e) ->
+    begin match e with
+      | Mess(_) -> e
+      | _ -> Mess("Error - Program Abort")
+    end
 
   (**********************
    * Well-scoped relation
-   **********************)
+   **s********************)
 
   (* The relation:
    *
@@ -1108,6 +1112,7 @@ let step_tests : test_block =
       ; TyApply(ppid,Nat)             , R(Step(pid))
       ; fiveo                         , R(Val(VPack(Nat,VPair(VNat(VZero),VLambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X"))))))
       ; unp                           , R(Step(Pack(Nat,Apply(Projr(Pair(Zero,Lambda("x",Nat,Var("x")))),Projl(Pair(Zero,Lambda("x",Nat,Var("x"))))),"Z",TVar("Z"))))
+      ; Raise(Mess("eee"))            , R(RErr)
       ; Apply(Raise(Raise(If(True,False,Zero))),True)       , R(Rais(False))
       ; TryWith(Zero, False)                                , R(Val(VNat(VZero)))
       ; TryWith(Raise(False),Lambda("x", Bool, Var("x")))      , R((Step (Apply ((Lambda ("x", Bool, (Var "x"))), False))))
@@ -1229,5 +1234,11 @@ let infer_tests =
 let _ =
   _SHOW_PASSED_TESTS := false ;
   run_tests [step_tests;infer_tests]
+
+let step_tests2 =
+  let m : exp = Raise(Mess("eee")) in
+  print_endline "**";
+  print_endline (show_exp (step_star m));
+  print_endline (show_result (step m))
 
 (* Name: <Lindsey Stuntz> *)
