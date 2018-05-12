@@ -606,7 +606,7 @@ let rec step (e0 : exp) : result = match e0 with
       | Rais(_) -> RErr
       end
   (* x is not closed *)
-  | Var(x) -> raise NOT_CLOSED_ERROR
+  | Var(x) -> Rais(Mess("Not Closed Error"))
   (* λ(x:τ).e ∈ val *)
   | Lambda(x,t,e) -> Val(VLambda(x,t,e))
   | Apply(e1,e2) -> begin match step e1 with
@@ -1112,7 +1112,7 @@ let step_tests : test_block =
       ; TyApply(ppid,Nat)             , R(Step(pid))
       ; fiveo                         , R(Val(VPack(Nat,VPair(VNat(VZero),VLambda("x",Nat,Var("x"))),"X",Prod(TVar("X"),Fun(TVar("X"),TVar("X"))))))
       ; unp                           , R(Step(Pack(Nat,Apply(Projr(Pair(Zero,Lambda("x",Nat,Var("x")))),Projl(Pair(Zero,Lambda("x",Nat,Var("x"))))),"Z",TVar("Z"))))
-      ; Raise(Mess("eee"))            , R(RErr)
+      ; Raise(Mess("testing"))            , R((Rais (Mess "testing")))
       ; Apply(Raise(Raise(If(True,False,Zero))),True)       , R(Rais(False))
       ; TryWith(Zero, False)                                , R(Val(VNat(VZero)))
       ; TryWith(Raise(False),Lambda("x", Bool, Var("x")))      , R((Step (Apply ((Lambda ("x", Bool, (Var "x"))), False))))
@@ -1234,11 +1234,5 @@ let infer_tests =
 let _ =
   _SHOW_PASSED_TESTS := false ;
   run_tests [step_tests;infer_tests]
-
-let step_tests2 =
-  let m : exp = Raise(Mess("eee")) in
-  print_endline "**";
-  print_endline (show_exp (step_star m));
-  print_endline (show_result (step m))
 
 (* Name: <Lindsey Stuntz> *)
