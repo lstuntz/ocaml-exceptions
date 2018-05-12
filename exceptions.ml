@@ -896,7 +896,10 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
     let t3 = infer s g e3 in
     if not (tequal t1 Bool) then raise TYPE_ERROR else
     if not (tequal t2 t3) then raise TYPE_ERROR else
-      t2
+      begin match t2 with
+        | Error -> t3
+        | _ -> t2
+      end
   (* [Zero]
    * S , Γ ⊢ zero : nat *)
   | Zero -> Nat
@@ -1054,7 +1057,11 @@ let rec infer (s : tscope) (g : tenv) (e0 : exp) : ty = match e0 with
     begin match t2 with
       | Fun(t1',t2') -> if not (tequal t1 t2') then raise TYPE_ERROR else
           begin match t1' with
-            | Txn -> t1
+            | Txn ->
+              begin match t1 with
+                | Error -> t2'
+                | _ -> t1
+              end
             | _ -> raise TYPE_ERROR
           end
       | _ -> raise TYPE_ERROR
@@ -1201,6 +1208,10 @@ let infer_tests =
       ; unp                                   , R(unpt)
       ; unp'                                  , R(unp't)
       ; bunp                                  , TypeError
+      ; Lambda("x", Txn, False)                             , R(Fun(Txn, Bool))
+      ; TryWith(Raise(False),Lambda("x", Txn, Var("x")))    , TypeError
+      ; Mess("sample error")                                , R(Txn)
+      ; TryWith(Raise(Mess("Error Message")), Lambda("x", Txn, False)), R(Bool)
         (* SANITY CHECKS FOR HELPER CODE *)
         (*
         ; _pidpair                               , R(_pidpairt)
@@ -1218,27 +1229,5 @@ let infer_tests =
 let _ =
   _SHOW_PASSED_TESTS := false ;
   run_tests [step_tests;infer_tests]
-
-let step_tests2 =
-  let m : exp = TryWith(Raise(False),Lambda("x", Bool, Var("x"))) in
-  print_endline "**";
-  print_endline (show_exp (step_star m));
-  print_endline (show_result (step m))
-
-let infer_tests2 =
-  let m : exp = TryWith(Raise(False),Lambda("x", Txn, Var("x"))) in
-  let n : exp = Mess("hello") in
-  let o : exp = TryWith(False, Lambda("x", Txn, True)) in
-  let p1 : exp = Raise(Mess("errrrrr")) in
-  let p2 : exp = Lambda("x", Txn, False) in
-  let p : exp = TryWith(p1, p2) in
-  print_endline "**";
-  print_endline (show_exp (step_star m));
-  print_endline (show_exp (step_star n));
-  print_endline (show_exp (step_star o));
-  print_endline (show_exp (step_star p));
-  print_endline (show_ty (infer StringSet.empty StringMap.empty p1));
-  print_endline (show_ty (infer StringSet.empty StringMap.empty p2));
-  print_endline (show_ty (infer StringSet.empty StringMap.empty p))
 
 (* Name: <Lindsey Stuntz> *)
