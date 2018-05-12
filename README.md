@@ -1,5 +1,5 @@
 # ocaml-exceptions
-### An extension of the typed lambda calculus to catch and handle exceptions in OCamL. 
+### An extension of the system f lambda calculus to catch and handle exceptions in OCamL. 
 #### UVM CS 225 Final Project. Apr. 2018.
 
 
